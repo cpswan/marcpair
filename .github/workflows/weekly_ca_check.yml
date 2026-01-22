@@ -1,0 +1,24 @@
+name: Weekly Mozilla CA Subset Sync Check
+
+on:
+  schedule:
+    # 06:54 every Monday (UTC)
+    - cron: '54 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  check-certs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Run CA Comparison Script
+        run: |
+          chmod +x check_certs.sh
+          ./check_certs.sh
+
+      - name: Notify on failure
+        if: failure()
+        run: echo "Discrepancy found or script failed. Check logs."

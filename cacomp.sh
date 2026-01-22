@@ -8,50 +8,60 @@ REMOTE_URL="https://curl.se/ca/cacert.pem"
 echo "Downloading latest CA bundle..."
 curl -s -o "$REMOTE_FILE" "$REMOTE_URL"
 
-# 2. Function to create a clean "Fingerprint Name" map
-create_map() {
+# 2. Function to extract Certs and their "Mozilla-style" names
+extract_with_names() {
     local input=$1
     local output=$2
-    
-    # This loop identifies the block, extracts the name 2 lines above the BEGIN tag,
-    # and pairs it with the SHA256 fingerprint.
-    csplit -s -z "$input" '/BEGIN CERTIFICATE/' '{*}' -f "temp_cert_"
-    
-    for f in temp_cert_*; do
-        # Extract the label (the line above the ===)
-        # We look for the line preceding the "======" line
-        label=$(grep -B 2 "BEGIN CERTIFICATE" "$f" | head -n 1 | tr -d '\r')
-        
-        # Get fingerprint
-        fp=$(openssl x509 -noout -fingerprint -sha256 -in "$f" 2>/dev/null)
-        
-        if [ ! -z "$fp" ]; then
-            echo "$fp | $label" >> "$output"
+    local last_line=""
+    local second_to_last=""
+
+    while IFS= read -r line; do
+        # If we hit the start of a cert, the name was 2 lines ago
+        if [[ "$line" == *"-----BEGIN CERTIFICATE-----"* ]]; then
+            echo "$line" > current.tmp
+            
+            # Continue reading until the end of this specific cert
+            while IFS= read -r inner_line; do
+                echo "$inner_line" >> current.tmp
+                [[ "$inner_line" == *"-----END CERTIFICATE-----"* ]] && break
+            done
+            
+            # Get fingerprint and pair it with the captured name
+            fp=$(openssl x509 -noout -fingerprint -sha256 -in current.tmp 2>/dev/null)
+            if [[ -n "$fp" ]]; then
+                # $second_to_last is the CA Name
+                # $last_line is the ======= line
+                echo "$fp | $second_to_last" >> "$output"
+            fi
+            rm current.tmp
         fi
-        rm "$f"
-    done
+        second_to_last="$last_line"
+        last_line="$line"
+    done < "$input"
     
-    # Sort for comparison
-    sort -o "$output" "$output"
+    sort -u -o "$output" "$output"
 }
 
-echo "Processing local and remote certificates..."
+echo "Mapping certificates (Local)..."
 > local_map.txt
-> remote_map.txt
-create_map "$LOCAL_FILE" "local_map.txt"
-create_map "$REMOTE_FILE" "remote_map.txt"
+extract_with_names "$LOCAL_FILE" "local_map.txt"
 
-# 3. Compare
+echo "Mapping certificates (Remote)..."
+> remote_map.txt
+extract_with_names "$REMOTE_FILE" "remote_map.txt"
+
+# 3. Final Comparison
 echo -e "\n--- DISCREPANCY REPORT ---"
 
-# We compare based on the fingerprint (Column 1)
-awk -F' | ' 'NR==FNR{remote[$1]; next} !($1 in remote)' remote_map.txt local_map.txt > differences.txt
+# This finds lines in local_map that do NOT exist in remote_map
+# (Checks the whole string: "Fingerprint | Name")
+comm -23 local_map.txt remote_map.txt > differences.txt
 
 if [ ! -s differences.txt ]; then
-    echo "[✓] Your subset is 100% valid against the latest Mozilla bundle."
+    echo "[✓] No differences found. Your local certs match Mozilla's records."
 else
-    echo "[!] The following CA(s) in your local file are MISSING or CHANGED in the Mozilla bundle:"
-    echo "--------------------------------------------------------------------------------"
+    echo "[!] The following certs are in your LOCAL file but MISSING from Mozilla:"
+    echo "----------------------------------------------------------------------"
     cat differences.txt
 fi
 

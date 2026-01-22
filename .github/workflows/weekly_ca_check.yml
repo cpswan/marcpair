@@ -16,8 +16,7 @@ jobs:
 
       - name: Run CA Comparison Script
         run: |
-          chmod +x check_certs.sh
-          ./check_certs.sh
+          ./cacomp.sh
 
       - name: Notify on failure
         if: failure()
